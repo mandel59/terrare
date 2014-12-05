@@ -1,0 +1,133 @@
+local syntax = require "syntax"
+local compile = require "compile"
+
+local function thompsonvm(insts, n_gates)
+   local struct Thread {
+      pc : int
+   }
+
+   local struct ThreadList {
+      n : int
+      t : Thread[#insts + 1]
+   }
+
+   terra ThreadList:clear()
+      self.n = 0
+   end
+
+   terra ThreadList:push(t : Thread)
+      self.t[self.n] = t
+      self.n = self.n + 1
+   end
+
+   local struct GateList {
+      g : bool[n_gates]
+   }
+
+   terra GateList:clear()
+      var i = 0
+      while i < [n_gates] do
+        self.g[i] = false
+        i = i + 1
+      end
+   end
+
+   local function run(insts, clist, nlist, gates, pc, sp)
+      local cont = symbol()
+      local l = {}
+      for i, v in ipairs(insts) do
+         if v[1] == "char" then
+            table.insert(l, quote
+               if @sp == [v[2]] then
+                 nlist:push(Thread {[i + 1]})
+               end
+            end)
+         elseif v[1] == "jump" then
+            table.insert(l, quote
+               pc = [v[2]]
+               goto [cont]
+            end)
+         elseif v[1] == "split" then
+            table.insert(l, quote
+               clist:push(Thread {[v[3]]})
+               pc = [v[2]]
+               goto [cont]
+            end)
+         elseif v[1] == "gate" then
+            table.insert(l, quote
+               if not gates.g[ [v[2]] ] then
+                  gates.g[ [v[2]] ] = true
+                  pc = [i + 1]
+                  goto [cont]
+               end
+            end)
+         else
+            table.insert(l, quote
+               pc = [i + 1]
+               goto [cont]
+            end)
+         end
+      end
+      local p = quote
+         return true
+      end
+      for i = #l, 1, -1 do
+         p = quote
+            if pc == [i] then
+               [l[i]]
+            else
+               [p]
+            end
+         end
+      end
+      return quote ::[cont]:: [p] end
+   end
+
+   return terra(input : &int8) : bool
+      var l1 : ThreadList
+      var l2 : ThreadList
+      var gates : GateList
+      var clist = &l1
+      var nlist = &l2
+      clist:clear()
+      nlist:clear()
+      
+      var sp = input
+      while true do
+         clist:push(Thread {1})
+         var i = 0
+         while i < clist.n do
+            var pc = clist.t[i].pc
+            [run(insts, clist, nlist, gates, pc, sp)]
+            i = i + 1
+         end
+         if @sp == 0 then
+            return false
+         end
+         clist, nlist = nlist, clist
+         nlist:clear()
+         gates:clear()
+         sp = sp + 1
+      end
+   end
+end
+
+local ast = syntax.parse"(a|b)*c"
+local insts, n_gates = compile.compile(ast)
+local vm = thompsonvm(insts, n_gates)
+
+print(syntax.show(ast))
+
+print()
+
+for k, v in ipairs(insts) do
+   print(k, unpack(v))
+end
+
+print()
+
+vm:printpretty()
+
+print()
+
+print(vm"ababaac")
